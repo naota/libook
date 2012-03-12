@@ -17,7 +17,10 @@ import Data.ByteString.Char8 (pack)
 import Control.Concurrent (threadDelay)
 import Data.Time (getCurrentTime, diffUTCTime, addUTCTime)
 
-data Library = Library { systemid :: String
+type AppKey = String
+
+type SystemID = String
+data Library = Library { systemid :: SystemID
                        , systemname :: String
                        } deriving Show
 
@@ -29,10 +32,10 @@ data CheckAPIResult = CheckContinue Session [BookReserve]
 type ISBN = String
 data BookReserve = BookReserve ISBN [ReserveState]
                    deriving Show
-type ReserveState = (String, Maybe String)
+type ReserveURL = String
+type ReserveState = (SystemID, Maybe ReserveURL)
 
-type SystemID = String
-
+parseSystem :: Sink Event IO (Maybe (String, Maybe String))
 parseSystem = tagName "system" (requireAttr "systemid") $ \sid -> do
   tagNoAttr "status" content
   rsv <- tagNoAttr "reserveurl" content
@@ -40,6 +43,7 @@ parseSystem = tagName "system" (requireAttr "systemid") $ \sid -> do
   return $ (unpack sid, fmap unpack rsv)
   where parseLibkey = tagName "libkey" ignoreAttrs $ const content
 
+parseBook :: Sink Event IO (Maybe BookReserve)
 parseBook = tagName "book" attr $ \isbn -> do
   sys <- many parseSystem
   return $ BookReserve (unpack isbn) sys
@@ -54,7 +58,7 @@ parseCheckAPIResult = tagNoAttr "result" $ do
     then return $ CheckDone books
     else return $ CheckContinue (unpack session) books
 
-checkAPISrc :: String -> [SystemID] -> [ISBN] -> Source IO [BookReserve]
+checkAPISrc :: AppKey -> [SystemID] -> [ISBN] -> Source IO [BookReserve]
 checkAPISrc appkey libs isbns = sourceStateIO initial clean pull
   where initial = return (Nothing, Nothing)
         clean _ = return ()
