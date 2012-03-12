@@ -64,7 +64,7 @@ cartBooks email password = withManager $ \manager -> do
                 $= CL.map anchorTokenToRequest
                 $$ CL.consume
     state <- getBrowserState
-    return $ cartPageBooks manager state ((cartRequest 0):cartreqs)
+    return $ cartPageBooks manager state (reverse $ (cartRequest 0):cartreqs)
   where isCartToken (TagOpen "a" attrs _) = maybe False isCartLink $ lookup "href" attrs
         isCartToken _ = False
         isCartLink url = "/gp/cart/view.html" `isInfixOf` url
@@ -76,16 +76,14 @@ cartBooks email password = withManager $ \manager -> do
 
 cartPageBooks :: Manager -> BrowserState -> [Request IO] -> Source IO Product
 cartPageBooks manager state reqs = sourceState initial pull
-  where initial = (Nothing, reqs)
-        pull (Nothing, []) = return $ StateClosed
-        pull (Nothing, (next:rest)) = browse manager $ do
+  where initial = (reqs, [])
+        pull ([], []) = return $ StateClosed
+        pull (reqs', p:ps) = return $ StateOpen (reqs', ps) p
+        pull ((next:rest), []) = browse manager $ do
           setBrowserState state
           Response _ _ bsrc <- makeRequest next
-          lift $ pull (Just (products bsrc), rest)
-        pull (Just bsrc, rest) = do
-          res <- sourcePull bsrc
-          case res of Closed -> pull (Nothing, rest)
-                      Open bsrc' val -> return $ StateOpen (Just bsrc', rest) val
+          res <- lift $ products bsrc $$ CL.consume
+          lift $ pull (rest, reverse res)
         products bsrc = bsrc $= tokenStream
                         $= CL.filter isProduct
                         $= CL.map toProduct
