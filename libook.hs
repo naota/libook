@@ -3,9 +3,13 @@ import qualified Data.Conduit.List as CL
 import Data.Conduit
 
 import Amazon
+import Calil
 
 main :: IO ()
 main = do
-  (email:pass:_) <- getArgs
+  (email:pass:appkey:_) <- getArgs
   cartSrc <- cartBooks email pass
-  runResourceT $ cartSrc $= CL.isolate 10 $$ CL.mapM_ print
+  isbns <- runResourceT $ cartSrc $$ CL.take 10
+  print isbns
+  runResourceT $ checkAPISrc appkey libsys isbns $$ CL.mapM_ print
+  where libsys = [ "Osaka_Ikeda", "Osaka_Toyonaka", "Univ_Osaka" ]
