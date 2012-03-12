@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Calil (checkAPISrc) where
+module Calil (checkAPISrc, libraryAPI) where
 
 import Control.Applicative ((<*))
 import Control.Monad (forM_, when)
