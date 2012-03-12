@@ -15,7 +15,7 @@ import Network.HTTP.Conduit.Browser ( browse, makeRequest, BrowserAction
                                     , getBrowserState, setBrowserState, BrowserState )
 import Text.HTML.TagStream (tokenStream, Token'(..))
 
-type Product = ByteString
+type Product = String
 
 cartRequest :: Int -> Request m
 cartRequest n = req
@@ -91,7 +91,8 @@ cartPageBooks manager state reqs = sourceState initial pull
         isProduct _ = False                        
         isProductUrl url = "/gp/product/" `isInfixOf` url
                            && "ref=ox_sc_act_image_" `isInfixOf` url
-        toProduct (TagOpen "a" attrs _) = B.takeWhile (/= '/') . B.drop (B.length urlheader) .
+        toProduct (TagOpen "a" attrs _) = unpack $ B.takeWhile (/= '/') . 
+                                          B.drop (B.length urlheader) .
                                           fromJust $ lookup "href" attrs
         toProduct _ = error "Expecting product link"
         urlheader = pack "http://www.amazon.co.jp/gp/product/"
