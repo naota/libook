@@ -13,7 +13,7 @@ import Network.HTTP.Conduit ( parseUrl, withManager, Response(..), Request(..)
                             , urlEncodedBody, Manager )
 import Network.HTTP.Conduit.Browser ( browse, makeRequest, BrowserAction
                                     , getBrowserState, setBrowserState, BrowserState )
-import Text.HTML.TagStream (tokenStream, Token'(..), Token, Attr)
+import Text.HTML.TagStream (tokenStream, Token'(..))
 
 type Product = ByteString
 
@@ -53,18 +53,6 @@ signin email password = do
                  , ("email", pack email)
                  , ("password", pack password)
                  ]
-
-filterFormInput :: Resource m => ([Attr] -> Bool) -> Conduit Token m Token
-filterFormInput f = conduitState initial push close
-  where initial = False
-        push False x@(TagOpen "form" attrs _)
-          | f attrs = return $ StateProducing True [x]
-          | otherwise = return $ StateProducing False []
-        push False _ = return $ StateProducing False []
-        push True x@(TagOpen "input" _ _) = return $ StateProducing True [x]
-        push True x@(TagClose "form") = return $ StateProducing False [x]
-        push True _ = return $ StateProducing True []
-        close _ = return []
 
 cartBooks :: String -> String -> IO (Source IO Product)
 cartBooks email password = withManager $ \manager -> do
