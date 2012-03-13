@@ -30,23 +30,33 @@ data CheckAPIResult = CheckContinue Session [BookReserve]
                     deriving Show
 
 type ISBN = String
-data BookReserve = BookReserve ISBN [ReserveState]
-                   deriving Show
-type ReserveURL = String
-type ReserveState = (SystemID, Maybe ReserveURL)
+type BookReserve = (ISBN, [ReserveState])
 
-parseSystem :: Sink Event IO (Maybe (String, Maybe String))
+type ReserveURL = String
+data ReserveState = ReserveOK SystemID (Maybe ReserveURL)
+                  | ReserveRunning SystemID
+                  | ReserveError SystemID
+                  deriving Show
+
+parseSystem :: Sink Event IO (Maybe ReserveState)
 parseSystem = tagName "system" (requireAttr "systemid") $ \sid -> do
-  tagNoAttr "status" content
+  Just st <- tagNoAttr "status" content
   rsv <- tagNoAttr "reserveurl" content
   tagNoAttr "libkeys" $ many parseLibkey
-  return $ (unpack sid, fmap unpack rsv)
+  case unpack st of
+    "OK" -> okresult sid $ fmap unpack rsv
+    "Cache" -> okresult sid $ fmap unpack rsv
+    "Running" -> return . ReserveRunning $ unpack sid
+    "Error" -> return . ReserveError $ unpack sid
+    _ -> error "Unexpected status"
   where parseLibkey = tagName "libkey" ignoreAttrs $ const content
+        okresult sid (Just "") = return $ ReserveOK (unpack sid) Nothing
+        okresult sid x = return $ ReserveOK (unpack sid) x
 
 parseBook :: Sink Event IO (Maybe BookReserve)
 parseBook = tagName "book" attr $ \isbn -> do
   sys <- many parseSystem
-  return $ BookReserve (unpack isbn) sys
+  return (unpack isbn, sys)
   where attr = requireAttr "isbn" <* ignoreAttrs
 
 parseCheckAPIResult :: Sink Event IO (Maybe CheckAPIResult)
