@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Calil (checkAPISrc, libraryAPI, orderedCheckSrc) where
+module Calil (orderedCheckSrc, libraryAPI, ReserveState(..)) where
 
 import Control.Applicative ((<*))
 import Control.Monad (forM_, when)
@@ -13,9 +13,9 @@ import Network.HTTP.Conduit (http, parseUrl, Response(..), withManager, Request(
 import Text.XML.Stream.Parse ( def, parseBytes, tagNoAttr, ignoreAttrs, content, many
                              , requireAttr, tagName )
 import Network.HTTP.Types (renderSimpleQuery)
-import Data.ByteString.Char8 (pack)
+import Data.ByteString.Char8 (pack, ByteString)
 import Control.Concurrent (threadDelay)
-import Data.Time (getCurrentTime, diffUTCTime, addUTCTime)
+import Data.Time (getCurrentTime, diffUTCTime, addUTCTime, UTCTime)
 
 type AppKey = String
 
@@ -68,11 +68,13 @@ parseCheckAPIResult = tagNoAttr "result" $ do
     then return $ CheckDone books
     else return $ CheckContinue (unpack session) books
 
-checkAPISrc :: AppKey -> [SystemID] -> [ISBN] -> Source IO [BookReserve]
-checkAPISrc appkey libs isbns = sourceStateIO initial clean pull
-  where initial = return (Nothing, Nothing)
+data CheckAPIState = CASInit (Source IO [ISBN]) (Maybe UTCTime)
+                   | CASSession (Source IO [ISBN]) (Maybe UTCTime) ByteString [ISBN]
+checkAPISrc :: AppKey -> [SystemID] -> Source IO [ISBN] -> Source IO ([ISBN], [BookReserve])
+checkAPISrc appkey libs src = sourceStateIO initial clean pull
+  where initial = return $ CASInit src Nothing
         clean _ = return ()
-        callAPI tm query = withManager $ \manager -> do
+        callAPI tm query src' isbns = withManager $ \manager -> do
           cur <- lift getCurrentTime
           when (isJust tm && cur < fromJust tm) $ do
             lift . threadDelay . (`div` (10 ^ 6)) .  fromEnum $ diffUTCTime (fromJust tm) cur
@@ -80,34 +82,44 @@ checkAPISrc appkey libs isbns = sourceStateIO initial clean pull
           Response _ _ bsrc <- http (reqQuery query) manager
           Just res <- bsrc $= parseBytes def $$ parseCheckAPIResult
           case res of
-            CheckContinue ses xs -> return $ StateOpen (Just . Just $ pack ses, Just next) xs
-            CheckDone xs -> return $ StateOpen (Just Nothing, Just next) xs
-        pull (Nothing, _) = callAPI Nothing initQuery
-        pull (Just Nothing, _) = return $ StateClosed
-        pull (Just (Just ses), tm) = callAPI tm $ sesQuery ses
+            CheckContinue ses xs ->
+              return $ StateOpen (CASSession src' (Just next) (pack ses) isbns) (isbns,xs)
+            CheckDone xs ->
+              return $ StateOpen (CASInit src' (Just next)) (isbns, xs)
+        pull (CASInit src' tm) = do
+          res <- runResourceT $ sourcePull src'
+          case res of
+            Open src'' isbns -> callAPI tm (initQuery isbns) src'' isbns
+            Closed -> return $ StateClosed
+        pull (CASSession src' tm ses isbns) = callAPI tm (sesQuery ses) src' isbns
         reqQuery q = basereq { queryString = renderSimpleQuery False q }
-        initQuery = [ ("appkey", pack appkey)
-                    , ("format", "xml")
-                    , ("isbn", isbnlist)
-                    , ("systemid", liblist)
-                    ]
+        initQuery isbns = [ ("appkey", pack appkey)
+                          , ("format", "xml")
+                          , ("isbn", isbnlist isbns)
+                          , ("systemid", liblist)
+                          ]
         sesQuery ses = [ ("appkey", pack appkey)
                        , ("format", "xml")
                        , ("session", ses)
                        ]
-        isbnlist = pack $ concatMap (++ ",") isbns
+        isbnlist = pack . concatMap (++ ",")
         liblist = pack $ concatMap (++ ",") libs
         basereq = fromJust $ parseUrl "http://api.calil.jp/check"
 
-orderedCheckSrc :: AppKey -> [SystemID] -> [ISBN] -> Source IO BookReserve
-orderedCheckSrc appkey libs isbns = checkAPISrc appkey libs isbns $= condOrd
-  where condOrd :: Conduit [BookReserve] IO BookReserve
+data OCState = OCInit
+             | OCProcess [ISBN]
+orderedCheckSrc :: AppKey -> [SystemID] -> Source IO [ISBN] -> Source IO BookReserve
+orderedCheckSrc appkey libs src = checkAPISrc appkey libs src $= condOrd
+  where condOrd :: Conduit ([ISBN], [BookReserve]) IO BookReserve
         condOrd = conduitState initial push close
-        initial = isbns
-        push [] _ = return $ StateFinished Nothing []
-        push isbns' apires =
-          let (arrived,rest) = consumeArrived apires isbns' in
-          return $ StateProducing (reverse rest) (reverse arrived)
+        initial = OCInit
+        process isbns apires =
+          let (arrived,rest) = consumeArrived apires isbns in
+          if rest == []
+          then return $ StateProducing OCInit (reverse arrived)
+          else return $ StateProducing (OCProcess (reverse rest)) (reverse arrived)
+        push OCInit (isbns, apires) = process isbns apires
+        push (OCProcess isbns) (_, apires) = process isbns apires
         close _ = return []
         consumeArrived apires isbns' = foldl (f apires) ([], []) isbns'
         f apires (xs, []) isbn =
