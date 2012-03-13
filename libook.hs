@@ -11,5 +11,5 @@ main = do
   cartSrc <- cartBooks email pass
   isbns <- runResourceT $ cartSrc $$ CL.take 10
   print isbns
-  runResourceT $ checkAPISrc appkey libsys isbns $$ CL.mapM_ print
+  runResourceT $ orderedCheckSrc appkey libsys isbns $$ CL.mapM_ print
   where libsys = [ "Osaka_Ikeda", "Osaka_Toyonaka", "Univ_Osaka" ]

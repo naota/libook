@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Calil (checkAPISrc, libraryAPI) where
+module Calil (checkAPISrc, libraryAPI, orderedCheckSrc) where
 
 import Control.Applicative ((<*))
 import Control.Monad (forM_, when)
@@ -99,6 +99,27 @@ checkAPISrc appkey libs isbns = sourceStateIO initial clean pull
         liblist = pack $ concatMap (++ ",") libs
         basereq = fromJust $ parseUrl "http://api.calil.jp/check"
 
+orderedCheckSrc :: AppKey -> [SystemID] -> [ISBN] -> Source IO BookReserve
+orderedCheckSrc appkey libs isbns = checkAPISrc appkey libs isbns $= condOrd
+  where condOrd :: Conduit [BookReserve] IO BookReserve
+        condOrd = conduitState initial push close
+        initial = isbns
+        push [] _ = return $ StateFinished Nothing []
+        push isbns' apires =
+          let (arrived,rest) = consumeArrived apires isbns' in
+          return $ StateProducing (reverse rest) (reverse arrived)
+        close _ = return []
+        consumeArrived apires isbns' = foldl (f apires) ([], []) isbns'
+        f apires (xs, []) isbn =
+          case lookup isbn apires of
+            Just sysres -> if any isRuning sysres
+                           then (xs, [isbn])
+                           else ((isbn, sysres):xs, [])
+            Nothing -> (xs, [isbn])
+        f _ (xs, ys) isbn = (xs, isbn:ys)
+        isRuning (ReserveRunning _) = True
+        isRuning _ = False
+        
 parseLibrary :: Sink Event IO (Maybe Library)
 parseLibrary = tagNoAttr "Library" $ do
   Just sid <- tagNoAttr "systemid" content
