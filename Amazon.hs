@@ -1,21 +1,19 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
 
 module Amazon (cartBooks) where
 
 import Control.Monad.Trans.Class (lift)
 import Data.ByteString (isInfixOf)
-import Data.ByteString.Char8 (unpack, ByteString, pack)
+import Data.ByteString.Char8 (unpack, pack)
 import qualified Data.ByteString.Char8 as B
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.Maybe (fromJust)
 import Network.HTTP.Conduit ( parseUrl, withManager, Response(..), Request(..)
-                            , urlEncodedBody, Manager )
+                            , urlEncodedBody )
 import Network.HTTP.Conduit.Browser ( browse, makeRequest, BrowserAction
-                                    , getBrowserState, setBrowserState, BrowserState )
+                                    , getBrowserState, setBrowserState )
 import Text.HTML.TagStream (tokenStream, Token'(..))
-
-type Product = String
 
 cartRequest :: Int -> Request m
 cartRequest n = req
@@ -29,7 +27,7 @@ homepageRequest = req
 
 signin :: String -> String -> BrowserAction ()
 signin email password = do
-  Response _ _ bsrc <- makeRequest homepageRequest
+  Response _ _ _ bsrc <- makeRequest homepageRequest
   signinRequest <- lift $ bsrc
                    $= tokenStream
                    $= CL.filter isSigninForm
@@ -54,45 +52,43 @@ signin email password = do
                  , ("password", pack password)
                  ]
 
-cartBooks :: String -> String -> IO (Source IO Product)
-cartBooks email password = withManager $ \manager -> do
-  browse manager $ do
-    signin email password
-    Response _ _ bsrc <- makeRequest $ cartRequest 0
-    cartreqs <- lift $ bsrc $= tokenStream
-                $= CL.filter isCartToken
-                $= CL.map anchorTokenToRequest
-                $$ CL.consume
-    state <- getBrowserState
-    return $ cartPageBooks manager state (reverse $ (cartRequest 0):cartreqs)
-  where isCartToken (TagOpen "a" attrs _) = maybe False isCartLink $ lookup "href" attrs
-        isCartToken _ = False
-        isCartLink url = "/gp/cart/view.html" `isInfixOf` url
-                         && "page=" `isInfixOf` url
-        addServ x = "http://www.amazon.co.jp" ++ x
-        hrefURL (TagOpen "a" attrs _) = addServ . unpack . fromJust $ lookup "href" attrs
-        hrefURL _ = error "Expecting anchor"
-        anchorTokenToRequest = fromJust . parseUrl . hrefURL
-
-cartPageBooks :: Manager -> BrowserState -> [Request IO] -> Source IO Product
-cartPageBooks manager state reqs = sourceState initial pull
-  where initial = (reqs, [])
-        pull ([], []) = return $ StateClosed
-        pull (reqs', p:ps) = return $ StateOpen (reqs', ps) p
-        pull ((next:rest), []) = browse manager $ do
+cartBooks :: String -> String -> Source (ResourceT IO) String
+cartBooks email password = sourceStateIO initial clean pull
+  where initial = withManager $ \manager -> do
+          browse manager $ do
+            signin email password
+            Response _ _ _ bsrc <- makeRequest $ cartRequest 0
+            cartreqs <- lift $ bsrc $= tokenStream
+                        $= CL.filter isCartToken
+                        $= CL.map anchorTokenToRequest
+                        $$ CL.consume
+            state <- getBrowserState
+            return ([], manager, state, reverse $ (cartRequest 0):cartreqs)
+        clean _ = return ()
+        pull ([], _, _, []) = return StateClosed
+        pull ([], manager, state, (next:rest)) = browse manager $ do
           setBrowserState state
-          Response _ _ bsrc <- makeRequest next
+          Response _ _ _ bsrc <- makeRequest next
           res <- lift $ products bsrc $$ CL.consume
-          lift $ pull (rest, reverse res)
+          lift $ pull (reverse res, manager, state, rest)
+        pull (p:ps, manager, state, rest) = return $ StateOpen (ps, manager, state, rest) p
+        isCartToken (TagOpen "a" attrs _) = maybe False isCartLink $ lookup "href" attrs
+        isCartToken _ = False
+        anchorTokenToRequest = fromJust . parseUrl . hrefURL
         products bsrc = bsrc $= tokenStream
                         $= CL.filter isProduct
                         $= CL.map toProduct
         isProduct (TagOpen "a" attrs _) = maybe False isProductUrl $ lookup "href" attrs
-        isProduct _ = False                        
-        isProductUrl url = "/gp/product/" `isInfixOf` url
-                           && "ref=ox_sc_act_image_" `isInfixOf` url
-        toProduct (TagOpen "a" attrs _) = unpack $ B.takeWhile (/= '/') . 
+        isProduct _ = False
+        isCartLink url = "/gp/cart/view.html" `isInfixOf` url &&
+                         "page=" `isInfixOf` url
+        hrefURL (TagOpen "a" attrs _) = addServ . unpack . fromJust $ lookup "href" attrs
+        hrefURL _ = error "Expecting anchor"
+        toProduct (TagOpen "a" attrs _) = unpack $ B.takeWhile (/= '/') .
                                           B.drop (B.length urlheader) .
                                           fromJust $ lookup "href" attrs
         toProduct _ = error "Expecting product link"
         urlheader = pack "http://www.amazon.co.jp/gp/product/"
+        isProductUrl url = "/gp/product/" `isInfixOf` url &&
+                           "ref=ox_sc_act_image_" `isInfixOf` url
+        addServ x = "http://www.amazon.co.jp" ++ x

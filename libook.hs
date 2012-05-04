@@ -1,5 +1,6 @@
 {-# LANGUAGE ViewPatterns #-}
 
+import Control.Monad.Trans.Class (lift)
 import System.Environment (getArgs)
 import qualified Data.Conduit.List as CL
 import Data.Conduit
@@ -13,19 +14,14 @@ import System.IO (hGetChar, stdin, hSetEcho, hSetBuffering, BufferMode(..))
 import Amazon
 import Calil
 
-($=$) :: t1 -> (t1 -> t) -> t
-($=$) = flip ($)
-infixl 1 $=$
-
 main :: IO ()
 main = do
   (email:pass:appkey:libsys) <- getArgs
-  cartSrc <- cartBooks email pass
-  runResourceT $ cartSrc
+  runResourceT $ cartBooks email pass
     $= (C.sequence $ CL.take 10)
-    $=$ orderedCheckSrc appkey libsys
+    $= orderedCheckCond appkey libsys
     $= CL.filter reserveAvailable
-    $$ CL.mapM_ askReserve
+    $$ transPipe lift $ CL.mapM_ askReserve
   where reserveAvailable (_, xs) = any isReserveJust xs
         isReserveJust (ReserveOK _ (Just _)) = True
         isReserveJust _ = False
