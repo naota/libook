@@ -27,7 +27,7 @@ main = do
         isReserveJust _ = False
 
 askReserve :: ((String, String), [ReserveState]) -> IO ()
-askReserve input@((isbn, bookname), xs) = do
+askReserve input@((_, bookname), xs) = do
   putStrLn bookname
   putStrLn "Book available. Reserve it pressing key:"
   putStr . unlines . map g $ commands
