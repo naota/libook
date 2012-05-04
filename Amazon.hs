@@ -9,11 +9,13 @@ import qualified Data.ByteString.Char8 as B
 import Data.Conduit
 import qualified Data.Conduit.List as CL
 import Data.Maybe (fromJust)
+import qualified Data.Text as T
 import Network.HTTP.Conduit ( parseUrl, withManager, Response(..), Request(..)
                             , urlEncodedBody )
 import Network.HTTP.Conduit.Browser ( browse, makeRequest, BrowserAction
                                     , getBrowserState, setBrowserState )
 import Text.HTML.TagStream (tokenStream, Token'(..))
+import Data.Text.ICU.Convert (open, toUnicode)
 
 cartRequest :: Int -> Request m
 cartRequest n = req
@@ -52,7 +54,7 @@ signin email password = do
                  , ("password", pack password)
                  ]
 
-cartBooks :: String -> String -> Source (ResourceT IO) String
+cartBooks :: String -> String -> Source (ResourceT IO) (String, String)
 cartBooks email password = sourceStateIO initial clean pull
   where initial = withManager $ \manager -> do
           browse manager $ do
@@ -69,26 +71,30 @@ cartBooks email password = sourceStateIO initial clean pull
         pull ([], manager, state, (next:rest)) = browse manager $ do
           setBrowserState state
           Response _ _ _ bsrc <- makeRequest next
-          res <- lift $ products bsrc $$ CL.consume
+          cp932 <- lift $ lift $ open "CP932" Nothing
+          res <- lift $ products bsrc cp932 $$ CL.consume
           lift $ pull (reverse res, manager, state, rest)
         pull (p:ps, manager, state, rest) = return $ StateOpen (ps, manager, state, rest) p
         isCartToken (TagOpen "a" attrs _) = maybe False isCartLink $ lookup "href" attrs
         isCartToken _ = False
         anchorTokenToRequest = fromJust . parseUrl . hrefURL
-        products bsrc = bsrc $= tokenStream
-                        $= CL.filter isProduct
-                        $= CL.map toProduct
-        isProduct (TagOpen "a" attrs _) = maybe False isProductUrl $ lookup "href" attrs
-        isProduct _ = False
+        products bsrc codec = bsrc $= tokenStream
+                        $= CL.groupBy isProduct
+                        $= CL.filter ((==) 2 . length)
+                        $= CL.map (toProduct codec)
+        isProduct (TagOpen "a" attrs _) _ = maybe False isProductUrl $ lookup "href" attrs
+        isProduct _ _ = False
         isCartLink url = "/gp/cart/view.html" `isInfixOf` url &&
                          "page=" `isInfixOf` url
         hrefURL (TagOpen "a" attrs _) = addServ . unpack . fromJust $ lookup "href" attrs
         hrefURL _ = error "Expecting anchor"
-        toProduct (TagOpen "a" attrs _) = unpack $ B.takeWhile (/= '/') .
-                                          B.drop (B.length urlheader) .
-                                          fromJust $ lookup "href" attrs
-        toProduct _ = error "Expecting product link"
+        toProduct codec ((Text title):(TagOpen "a" attrs _):[]) = ( unpack $ B.takeWhile (/= '/') .
+                                                                  B.drop (B.length urlheader) .
+                                                                  fromJust $ lookup "href" attrs
+                                                                , decode codec title)
+        toProduct _  _ = error "Expecting product link"
         urlheader = pack "http://www.amazon.co.jp/gp/product/"
         isProductUrl url = "/gp/product/" `isInfixOf` url &&
-                           "ref=ox_sc_act_image_" `isInfixOf` url
+                           "ref=ox_sc_act_title_" `isInfixOf` url
         addServ x = "http://www.amazon.co.jp" ++ x
+        decode codec x = T.unpack $ toUnicode codec x

@@ -26,8 +26,9 @@ main = do
         isReserveJust (ReserveOK _ (Just _)) = True
         isReserveJust _ = False
 
-askReserve :: (t, [ReserveState]) -> IO ()
-askReserve (isbn, xs) = do
+askReserve :: ((String, String), [ReserveState]) -> IO ()
+askReserve input@((isbn, bookname), xs) = do
+  putStrLn bookname
   putStrLn "Book available. Reserve it pressing key:"
   putStr . unlines . map g $ commands
   hSetEcho stdin False; hSetBuffering stdin NoBuffering
@@ -35,14 +36,14 @@ askReserve (isbn, xs) = do
   hSetEcho stdin True; hSetBuffering stdin LineBuffering
   case lookup cmd commands of
     Just (_, act) -> act
-    Nothing -> askReserve (isbn, xs)
+    Nothing -> askReserve input
   where f (ReserveOK sys (Just url)) = Just (sys, openLink url)
         f _ = Nothing
         g (n, (x, _)) = "\t[" ++ n : "]" ++ "\t" ++ x
         avails = mapMaybe f xs
         commands = zip ['1'..] avails ++ basecoms
         basecoms = [ ('i', ("Ignore", putStrLn "Ignored"))
-                   , ('q', ("Quit", exitSuccess))
+                   , ('Q', ("Quit", exitSuccess))
                    ]
 
 openLink :: String -> IO ()

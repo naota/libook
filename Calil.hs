@@ -37,6 +37,8 @@ data CheckAPIResult = CheckContinue Session [BookReserve]
 type ISBN = String
 type BookReserve = (ISBN, [ReserveState])
 
+type BookData = (ISBN, String)
+
 type ReserveURL = String
 data ReserveState = ReserveOK SystemID (Maybe ReserveURL)
                   | ReserveRunning SystemID
@@ -74,17 +76,17 @@ parseCheckAPIResult = tagNoAttr "result" $ do
     then CheckDone books
     else CheckContinue (unpack session) books
 
-data CheckAPIState = CASInit (Maybe UTCTime) [ISBN]
-                   | CASSession UTCTime Session [ISBN]
-checkAPICond :: AppKey -> [SystemID] -> Conduit [ISBN] (ResourceT IO) [BookReserve]
+data CheckAPIState = CASInit (Maybe UTCTime) [BookData]
+                   | CASSession UTCTime Session [BookData]
+checkAPICond :: AppKey -> [SystemID] -> Conduit [BookData] (ResourceT IO) [BookReserve]
 checkAPICond appkey libs = nosession Nothing
   where nosession tm = NeedInput (pull tm) close
         pull isbns tm = PipeM (nextcall $ CASInit isbns tm) finish
-        nextcall (CASInit tm isbns) = callAPI tm (initQuery isbns) isbns
-        nextcall (CASSession tm ses isbns) = callAPI (Just tm) (sesQuery ses) isbns
+        nextcall (CASInit tm bdata) = callAPI tm (initQuery $ map fst bdata) bdata
+        nextcall (CASSession tm ses bdata) = callAPI (Just tm) (sesQuery ses) bdata
         finish = undefined
         close = Done Nothing ()
-        callAPI tm query isbns = lift $ withManager $ \manager -> do
+        callAPI tm query bdata = lift $ withManager $ \manager -> do
           cur <- lift getCurrentTime
           when (isJust tm && cur < fromJust tm) $ do
             lift . threadDelay . (`div` (10 ^ 6)) .  fromEnum $ diffUTCTime (fromJust tm) cur
@@ -93,9 +95,9 @@ checkAPICond appkey libs = nosession Nothing
           Just res <- bsrc $= parseBytes def $$ parseCheckAPIResult
           return $
             case res of
-              CheckContinue ses books -> HaveOutput (insession next ses isbns) finish books
+              CheckContinue ses books -> HaveOutput (insession next ses bdata) finish books
               CheckDone books -> HaveOutput (nosession $ Just next) finish books
-        insession tm ses isbns = PipeM (nextcall $ CASSession tm ses isbns) finish
+        insession tm ses bdata = PipeM (nextcall $ CASSession tm ses bdata) finish
         reqQuery q = basereq { queryString = renderSimpleQuery False q }
         initQuery isbns = [ ("appkey", pack appkey)
                           , ("format", "xml")
@@ -125,8 +127,9 @@ withInputWrap cond0 = f Nothing cond0
           return $ f lastin np
 
 data OCState = OCInit
-             | OCProcess [ISBN]
-orderedCheckCond :: AppKey -> [SystemID] -> Pipe [ISBN] (ISBN, [ReserveState]) (ResourceT IO) ()
+             | OCProcess [BookData]
+orderedCheckCond :: AppKey -> [SystemID] ->
+                    Conduit [BookData] (ResourceT IO) (BookData, [ReserveState])
 orderedCheckCond appkey libs = (withInputWrap $ checkAPICond appkey libs) =$= condOrd
   where condOrd = conduitState initial push close
         initial = OCInit
@@ -137,15 +140,15 @@ orderedCheckCond appkey libs = (withInputWrap $ checkAPICond appkey libs) =$= co
           else return $ StateProducing (OCProcess (reverse rest)) (reverse arrived)
         push OCInit (Just isbns, apires) = process isbns apires
         push OCInit (Nothing, _) = error ""
-        push (OCProcess isbns) (_, apires) = process isbns apires
+        push (OCProcess bdata) (_, apires) = process bdata apires
         close _ = return []
         consumeArrived apires isbns' = foldl (f apires) ([], []) isbns'
-        f apires (xs, []) isbn =
+        f apires (xs, []) bd@(isbn, _) =
           case lookup isbn apires of
             Just sysres -> if any isRuning sysres
-                           then (xs, [isbn])
-                           else ((isbn, sysres):xs, [])
-            Nothing -> (xs, [isbn])
+                           then (xs, [bd])
+                           else ((bd, sysres):xs, [])
+            Nothing -> (xs, [bd])
         f _ (xs, ys) isbn = (xs, isbn:ys)
         isRuning (ReserveRunning _) = True
         isRuning _ = False
