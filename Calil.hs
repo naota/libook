@@ -11,6 +11,9 @@ import Control.Applicative ((<*))
 import Control.Monad (forM_, when)
 import Control.Monad.Trans.Class (lift)
 import Data.Conduit
+import Data.IORef (readIORef, IORef, modifyIORef)
+import Data.List (partition)
+import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust)
 import Data.Text ( unpack )
 import Data.XML.Types (Event)
@@ -43,7 +46,9 @@ type ReserveURL = String
 data ReserveState = ReserveOK SystemID (Maybe ReserveURL)
                   | ReserveRunning SystemID
                   | ReserveError SystemID
-                  deriving Show
+                  deriving (Show, Read)
+
+type CacheRef = IORef (M.Map ISBN BookReserve)
 
 parseSystem :: MonadThrow m => Sink Event m (Maybe ReserveState)
 parseSystem = tagName "system" (requireAttr "systemid") $ \sid -> do
@@ -78,15 +83,30 @@ parseCheckAPIResult = tagNoAttr "result" $ do
 
 data CheckAPIState = CASInit (Maybe UTCTime) [BookData]
                    | CASSession UTCTime Session [BookData]
-checkAPICond :: AppKey -> [SystemID] -> Conduit [BookData] (ResourceT IO) [BookReserve]
-checkAPICond appkey libs = nosession Nothing
+checkAPICond :: AppKey -> [SystemID] -> CacheRef
+                -> Conduit [BookData] IO [BookReserve]
+checkAPICond appkey libs cacheref = nosession Nothing
   where nosession tm = NeedInput (pull tm) close
         pull isbns tm = PipeM (nextcall $ CASInit isbns tm) finish
         nextcall (CASInit tm bdata) = callAPI tm (initQuery $ map fst bdata) bdata
         nextcall (CASSession tm ses bdata) = callAPI (Just tm) (sesQuery ses) bdata
         finish = undefined
         close = Done Nothing ()
-        callAPI tm query bdata = lift $ withManager $ \manager -> do
+        callAPI tm query bdata = if (isJust $ lookup "isbn" query)
+                                 then callAPIWithCache tm bdata
+                                 else callAPI' tm query bdata
+        callAPIWithCache tm bdata = do
+          cache <- readIORef cacheref
+          let (hit, rest) = partition (incache cache) bdata
+          return $
+            case (hit, rest) of
+              ([], []) -> error "Need some result"
+              (_, []) -> HaveOutput (nosession tm) finish $ map (toBookData cache) hit
+              (_, _) -> HaveOutput (cacherest tm rest) finish $ map (toBookData cache) hit
+        cacherest tm rest = PipeM (callAPI' tm (initQuery $ map fst rest) rest) finish
+        incache cache (isbn, _) = M.member isbn cache
+        toBookData cache (isbn, _) = fromJust $ M.lookup isbn cache
+        callAPI' tm query bdata = withManager $ \manager -> do
           cur <- lift getCurrentTime
           when (isJust tm && cur < fromJust tm) $ do
             lift . threadDelay . (`div` (10 ^ 6)) .  fromEnum $ diffUTCTime (fromJust tm) cur
@@ -96,7 +116,11 @@ checkAPICond appkey libs = nosession Nothing
           return $
             case res of
               CheckContinue ses books -> HaveOutput (insession next ses bdata) finish books
-              CheckDone books -> HaveOutput (nosession $ Just next) finish books
+              CheckDone books -> do
+                lift $ modifyIORef cacheref $ updatecache books
+                HaveOutput (nosession $ Just next) finish books
+        updatecache books cache = M.fromList (map toCacheData books) `M.union` cache
+        toCacheData book@(isbn, _) = (isbn, book)
         insession tm ses bdata = PipeM (nextcall $ CASSession tm ses bdata) finish
         reqQuery q = basereq { queryString = renderSimpleQuery False q }
         initQuery isbns = [ ("appkey", pack appkey)
@@ -128,9 +152,10 @@ withInputWrap cond0 = f Nothing cond0
 
 data OCState = OCInit
              | OCProcess [BookData]
-orderedCheckCond :: AppKey -> [SystemID] ->
-                    Conduit [BookData] (ResourceT IO) (BookData, [ReserveState])
-orderedCheckCond appkey libs = (withInputWrap $ checkAPICond appkey libs) =$= condOrd
+orderedCheckCond :: String -> [String] -> CacheRef
+                    -> Conduit [BookData] IO ((ISBN, String), [ReserveState])
+orderedCheckCond appkey libs cacheref = (withInputWrap $ checkAPICond appkey libs cacheref)
+                                        =$= condOrd
   where condOrd = conduitState initial push close
         initial = OCInit
         process isbns apires =

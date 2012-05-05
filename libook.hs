@@ -5,6 +5,8 @@ import System.Environment (getArgs)
 import qualified Data.Conduit.List as CL
 import Data.Conduit
 import qualified Data.Conduit as C
+import Data.IORef (newIORef, readIORef)
+import qualified Data.Map as M
 import Data.Maybe (mapMaybe)
 import Control.Applicative
 import System.Process (rawSystem)
@@ -17,14 +19,19 @@ import Calil
 main :: IO ()
 main = do
   (email:pass:appkey:libsys) <- getArgs
+  cache <- fmap read $ readFile cacheFile
+  cacheref <- newIORef cache
   runResourceT $ cartBooks email pass
     $= (C.sequence $ CL.take 10)
-    $= orderedCheckCond appkey libsys
+    $= (transPipe lift $ orderedCheckCond appkey libsys cacheref)
     $= CL.filter reserveAvailable
     $$ transPipe lift $ CL.mapM_ askReserve
+  newcache <- readIORef cacheref
+  writeFile cacheFile $ show newcache
   where reserveAvailable (_, xs) = any isReserveJust xs
         isReserveJust (ReserveOK _ (Just _)) = True
         isReserveJust _ = False
+        cacheFile = "libook.cache"
 
 askReserve :: ((String, String), [ReserveState]) -> IO ()
 askReserve input@((_, bookname), xs) = do
