@@ -48,7 +48,7 @@ data ReserveState = ReserveOK SystemID (Maybe ReserveURL)
                   | ReserveError SystemID
                   deriving (Show, Read)
 
-type CacheRef = IORef (M.Map ISBN BookReserve)
+type CacheRef = IORef (M.Map ISBN (BookReserve, UTCTime))
 
 parseSystem :: MonadThrow m => Sink Event m (Maybe ReserveState)
 parseSystem = tagName "system" (requireAttr "systemid") $ \sid -> do
@@ -105,7 +105,7 @@ checkAPICond appkey libs cacheref = nosession Nothing
               (_, _) -> HaveOutput (cacherest tm rest) finish $ map (toBookData cache) hit
         cacherest tm rest = PipeM (callAPI' tm (initQuery $ map fst rest) rest) finish
         incache cache (isbn, _) = M.member isbn cache
-        toBookData cache (isbn, _) = fromJust $ M.lookup isbn cache
+        toBookData cache (isbn, _) = fst . fromJust $ M.lookup isbn cache
         callAPI' tm query bdata = withManager $ \manager -> do
           cur <- lift getCurrentTime
           when (isJust tm && cur < fromJust tm) $ do
@@ -113,14 +113,15 @@ checkAPICond appkey libs cacheref = nosession Nothing
           next <- lift $ fmap (addUTCTime 3) getCurrentTime
           Response _ _ _ bsrc <- http (reqQuery query) manager
           Just res <- bsrc $= parseBytes def $$ parseCheckAPIResult
+          cachetime <- lift $ getCurrentTime
           return $
             case res of
               CheckContinue ses books -> HaveOutput (insession next ses bdata) finish books
               CheckDone books -> do
-                lift $ modifyIORef cacheref $ updatecache books
+                lift $ modifyIORef cacheref $ updatecache books cachetime
                 HaveOutput (nosession $ Just next) finish books
-        updatecache books cache = M.fromList (map toCacheData books) `M.union` cache
-        toCacheData book@(isbn, _) = (isbn, book)
+        updatecache books time cache = M.fromList (map (toCacheData time) books) `M.union` cache
+        toCacheData time book@(isbn, _) = (isbn, (book, time))
         insession tm ses bdata = PipeM (nextcall $ CASSession tm ses bdata) finish
         reqQuery q = basereq { queryString = renderSimpleQuery False q }
         initQuery isbns = [ ("appkey", pack appkey)
