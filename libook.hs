@@ -1,5 +1,6 @@
 {-# LANGUAGE ViewPatterns #-}
 
+import qualified Control.Exception as CE
 import Control.Monad.Trans.Class (lift)
 import System.Environment (getArgs)
 import qualified Data.Conduit.List as CL
@@ -19,7 +20,10 @@ import Calil
 main :: IO ()
 main = do
   (email:pass:appkey:libsys) <- getArgs
-  cache <- fmap read $ readFile cacheFile
+  cache <- CE.catch (fmap read $ readFile cacheFile)
+           (\e -> do
+               putStrLn $ show (e :: CE.IOException)
+               return M.empty)
   cacheref <- newIORef cache
   runResourceT $ cartBooks email pass
     $= (C.sequence $ CL.take 10)
