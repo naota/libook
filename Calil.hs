@@ -90,7 +90,7 @@ checkAPICond appkey libs cacheref = nosession Nothing
         pull isbns tm = PipeM (nextcall $ CASInit isbns tm) finish
         nextcall (CASInit tm bdata) = callAPI tm (initQuery $ map fst bdata) bdata
         nextcall (CASSession tm ses bdata) = callAPI (Just tm) (sesQuery ses) bdata
-        finish = undefined
+        finish = return ()
         close = Done Nothing ()
         callAPI tm query bdata = if (isJust $ lookup "isbn" query)
                                  then callAPIWithCache tm bdata
