@@ -36,12 +36,10 @@ main = do
         isReserveJust _ = False
         cacheFile = "libook.cache"
 
-askReserveSink :: Sink ((String, String), [ReserveState]) (ResourceT IO) Bool
-askReserveSink = sinkIO initial clean push close
-  where initial = return ()
-        clean _ = return ()
-        close _ = return True
-        push _ input = lift $ loop input
+askReserveSink :: Sink ((String, String), [ReserveState]) IO Bool
+askReserveSink = NeedInput pull close
+  where close = Done Nothing True
+        pull input = PipeM (loop input) $ return True
         loop input@((_, bookname), xs) = do
           putStrLn bookname
           putStrLn "Book available. Reserve it pressing key:"
@@ -57,9 +55,7 @@ askReserveSink = sinkIO initial clean push close
         g (n, (x, _)) = "\t[" ++ n : "]" ++ "\t" ++ x
         avails xs = mapMaybe f xs
         commands xs = zip ['1'..] (avails xs) ++ basecoms
-        basecoms = [ ('i', ("Ignore", putStrLn "Ignored" *> return IOProcessing))
-                   , ('Q', ("Quit", return $ IODone Nothing False))
+        basecoms = [ ('i', ("Ignore", putStrLn "Ignored" *> (return $ NeedInput pull close)))
+                   , ('Q', ("Quit", return $ Done Nothing False))
                    ]
-
-openLink :: String -> IO (SinkIOResult input output)
-openLink url = rawSystem "google-chrome" [url] *> return IOProcessing
+        openLink url = rawSystem "google-chrome" [url] *> (return $ NeedInput pull close)
