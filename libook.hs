@@ -24,11 +24,11 @@ main = do
                putStrLn $ show (e :: CE.IOException)
                return M.empty)
   cacheref <- newIORef cache
-  runResourceT $ cartBooks email pass
-    $= (C.sequence $ CL.take 10)
-    $= (transPipe lift $ orderedCheckCond appkey libsys cacheref)
-    $= CL.filter reserveAvailable
-    $$ askReserveSink
+  continue <- runResourceT $ cartBooks email pass
+              $= (C.sequence $ CL.take 10)
+              $= (transPipe lift $ orderedCheckCond appkey libsys cacheref)
+              $= CL.filter reserveAvailable
+              $$ askReserveSink
   newcache <- readIORef cacheref
   writeFile cacheFile $ show newcache
   where reserveAvailable (_, xs) = any isReserveJust xs
@@ -36,11 +36,11 @@ main = do
         isReserveJust _ = False
         cacheFile = "libook.cache"
 
-askReserveSink :: Sink ((String, String), [ReserveState]) (ResourceT IO) ()
+askReserveSink :: Sink ((String, String), [ReserveState]) (ResourceT IO) Bool
 askReserveSink = sinkIO initial clean push close
   where initial = return ()
         clean _ = return ()
-        close _ = return ()
+        close _ = return True
         push _ input = lift $ loop input
         loop input@((_, bookname), xs) = do
           putStrLn bookname
@@ -57,8 +57,8 @@ askReserveSink = sinkIO initial clean push close
         g (n, (x, _)) = "\t[" ++ n : "]" ++ "\t" ++ x
         avails xs = mapMaybe f xs
         commands xs = zip ['1'..] (avails xs) ++ basecoms
-        basecoms = [ ('i', ("Ignore", putStrLn "Ignored" *> return IOProcessing ))
-                   , ('Q', ("Quit", return $ IODone Nothing ()))
+        basecoms = [ ('i', ("Ignore", putStrLn "Ignored" *> return IOProcessing))
+                   , ('Q', ("Quit", return $ IODone Nothing False))
                    ]
 
 openLink :: String -> IO (SinkIOResult input output)
