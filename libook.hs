@@ -11,7 +11,6 @@ import qualified Data.Map as M
 import Data.Maybe (mapMaybe)
 import Control.Applicative
 import System.Process (rawSystem)
-import System.Exit (exitSuccess)
 import System.IO (hGetChar, stdin, hSetEcho, hSetBuffering, BufferMode(..))
 
 import Amazon
@@ -29,7 +28,7 @@ main = do
     $= (C.sequence $ CL.take 10)
     $= (transPipe lift $ orderedCheckCond appkey libsys cacheref)
     $= CL.filter reserveAvailable
-    $$ transPipe lift $ CL.mapM_ askReserve
+    $$ askReserveSink
   newcache <- readIORef cacheref
   writeFile cacheFile $ show newcache
   where reserveAvailable (_, xs) = any isReserveJust xs
@@ -37,25 +36,30 @@ main = do
         isReserveJust _ = False
         cacheFile = "libook.cache"
 
-askReserve :: ((String, String), [ReserveState]) -> IO ()
-askReserve input@((_, bookname), xs) = do
-  putStrLn bookname
-  putStrLn "Book available. Reserve it pressing key:"
-  putStr . unlines . map g $ commands
-  hSetEcho stdin False; hSetBuffering stdin NoBuffering
-  cmd <- hGetChar stdin
-  hSetEcho stdin True; hSetBuffering stdin LineBuffering
-  case lookup cmd commands of
-    Just (_, act) -> act
-    Nothing -> askReserve input
-  where f (ReserveOK sys (Just url)) = Just (sys, openLink url)
+askReserveSink :: Sink ((String, String), [ReserveState]) (ResourceT IO) ()
+askReserveSink = sinkIO initial clean push close
+  where initial = return ()
+        clean _ = return ()
+        close _ = return ()
+        push _ input = lift $ loop input
+        loop input@((_, bookname), xs) = do
+          putStrLn bookname
+          putStrLn "Book available. Reserve it pressing key:"
+          putStr . unlines . map g $ commands xs
+          hSetEcho stdin False; hSetBuffering stdin NoBuffering
+          cmd <- hGetChar stdin
+          hSetEcho stdin True; hSetBuffering stdin LineBuffering
+          case lookup cmd $ commands xs of
+            Just (_, act) -> act
+            Nothing -> loop input
+        f (ReserveOK sys (Just url)) = Just (sys, openLink url)
         f _ = Nothing
         g (n, (x, _)) = "\t[" ++ n : "]" ++ "\t" ++ x
-        avails = mapMaybe f xs
-        commands = zip ['1'..] avails ++ basecoms
-        basecoms = [ ('i', ("Ignore", putStrLn "Ignored"))
-                   , ('Q', ("Quit", exitSuccess))
+        avails xs = mapMaybe f xs
+        commands xs = zip ['1'..] (avails xs) ++ basecoms
+        basecoms = [ ('i', ("Ignore", putStrLn "Ignored" *> return IOProcessing ))
+                   , ('Q', ("Quit", return $ IODone Nothing ()))
                    ]
 
-openLink :: String -> IO ()
-openLink url = rawSystem "google-chrome" [url] *> return ()
+openLink :: String -> IO (SinkIOResult input output)
+openLink url = rawSystem "google-chrome" [url] *> return IOProcessing
