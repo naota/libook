@@ -5,6 +5,8 @@ module Calil (
   , checkAPICond
   , libraryAPI
   , ReserveState(..)
+  , BookData
+  , ISBN
   ) where
 
 import Control.Applicative ((<*))
@@ -154,7 +156,7 @@ withInputWrap cond0 = f Nothing cond0
 data OCState = OCInit
              | OCProcess [BookData]
 orderedCheckCond :: String -> [String] -> CacheRef
-                    -> Conduit [BookData] IO ((ISBN, String), [ReserveState])
+                    -> Conduit [BookData] IO (BookData, [ReserveState])
 orderedCheckCond appkey libs cacheref = (withInputWrap $ checkAPICond appkey libs cacheref)
                                         =$= condOrd
   where condOrd = conduitState initial push close
